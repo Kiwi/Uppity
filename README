@@ -1,5 +1,8 @@
 Uppity -- The pastebin client with an attitude
 
+Depends only on Lua and LuaSocket
+Optionally it will use LuaRocks 
+
 Usage: uppity [options] [file[s]]
 
 Options:
