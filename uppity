@@ -1,30 +1,37 @@
 #!/usr/bin/env lua
 --globals! cat uppity |luac -p -l - |grep ETGLOBAL
 local arg, print, ipairs, pairs, os, io, next, type, string, table, tostring, assert, dofile, pcall, getmetatable, require, unpack, error  =
-    arg, print, ipairs, pairs, os, io, next, type, string, table, tostring, assert, dofile, pcall, getmetatable, require, unpack, error
+      arg, print, ipairs, pairs, os, io, next, type, string, table, tostring, assert, dofile, pcall, getmetatable, require, unpack, error
+
 pcall(require, "luarocks.require")
 local socket = require "socket"
 local http = require "socket.http"
 local ltn12 = require "ltn12"
-local loaded_config = false
-local function loadconf(x)
-    local ok,e = pcall(dofile,x)
-    if ok then
-        loaded_config = true
-    end
-    if not ok and not string.match(e,"^cannot open ") then
+
+local function load_conf(x)
+    local ok, e = pcall(dofile, x)
+    if not ok and not string.match(e, "^cannot open ") then
         error(e)
     end
+    return ok
 end
 
-loadconf('/etc/uppity.conf')
-loadconf(os.getenv('HOME')..'/.uppity.conf')
+local ok = load_conf('./uppity.conf')
+ok = ok or load_conf('/etc/uppity.conf')
+ok = ok or load_conf(os.getenv('HOME')..'/.uppity.conf')
+ok = ok or load_conf(os.getenv('HOME')..'/.config/uppity.conf')
 
-local error_retrieving_url = 'Error retrieving url.'
+if not ok then
+    print('Error: no config file found, no services available')
+    os.exit(1)
+end
 
-local LP = {}
+SERVICES = SERVICES or {}
+
+LP = {}
+LP.services_dir = SERVICES_DIR or ''
 LP.service = DEFAULT_SERVICE or 'codepad'
-LP.language = DEFAULT_LANGUAGE or 'Lua'
+LP.language = DEFAULT_LANGUAGE or 'plain'
 LP.expires = DEFAULT_EXPIRY or '1 hour'
 LP.services = {}
 LP.options = {}
@@ -32,7 +39,7 @@ LP.files = {}
 LP.textdata = ''
 LP.description = DEFAULT_DESCRIPTION or ''
 LP.run = RUN or false
-LP.private = PRIVATE or true
+LP.private = PRIVATE or false
 LP.boundary = '##ThIs_iS_ThE_BoUnDaRy##'
 LP.nick = DEFAULT_NICK or os.getenv('USER')
 LP.concat = false
@@ -42,6 +49,21 @@ LP.xcut = false
 LP.file = 'data from stdin'
 LP.cont = true
 LP.stdin = true
+LP.error_retrieving_url = 'Error retrieving url.'
+
+local function load_services()
+    for i, service in ipairs(SERVICES) do
+        local ok = load_conf('./uppity.d/'..service..'.service.lua')
+        ok = ok or load_conf('/etc/uppity.d/'..service..'.service.lua')
+        ok = ok or load_conf(os.getenv('HOME')..'/.uppity.d/'..service..'.service.lua')
+        ok = ok or load_conf(os.getenv('HOME')..'/.config/uppity.d/'..service..'.service.lua')
+        ok = ok or load_conf(LP.services_dir..'/'..service..'.service.lua')
+        if not ok then
+            print('Error: '..service .. '.service.lua could not be opened')
+            os.exit(1)
+        end
+    end
+end
 
 local function str__mod(lhs, rhs)
     if type(rhs) == 'table' then
@@ -53,7 +75,7 @@ end
 
 getmetatable("").__mod = str__mod
 
-local function create_form_body(body_tbl)
+LP.create_form_body = function(body_tbl)
     local body = {}
     local tblinsert = table.insert
     for name, info in pairs(body_tbl) do
@@ -86,7 +108,7 @@ local function fdata_concat()
   LP.textdata = buf
 end
 
-local function add_service(service_name, service_url, languages_tbl, body_func, post_func, url_matcher, expires_tbl)
+LP.add_service = function(service_name, service_url, languages_tbl, body_func, post_func, url_matcher, expires_tbl)
     LP.services[service_name] = {
         url = service_url,
         languages = languages_tbl,
@@ -101,163 +123,15 @@ local function get_service_value(sub_tbl_name, key)
     return LP.services[LP.service][sub_tbl_name][key]
 end
 
-local function get_language()
+LP.get_language = function()
     return get_service_value('languages', LP.language) or LP.language
 end
 
-local function get_expires()
+LP.get_expires = function()
     return get_service_value('expires', LP.expires) or LP.expires
 end
 
-local CODEPAD_LANGUAGES = {
-    "C", "C++", "D", "Haskell", "Lua", "OCaml", "PHP", "Perl", ["Plain"] = "Plain Text",
-    "Python", "Ruby", "Scheme", "Tcl",
-}
-
-local function CODEPAD_MATCHER(response, header)
-    local url = header.location
-    if url then
-        return url
-    end
-    return error_retrieving_url
-end
-
-local function CODEPAD_BODY()
-    local run = LP.run and 'True' or 'False'
-    local private = LP.private and 'True' or 'False'
-    return create_form_body({
-        client = 'Luapaste',
-        run = run,
-        lang = get_language(),
-        private = private,
-        submit = 'Submit',
-        code = LP.textdata
-    })
-end
-
-
-local DPASTE_DE_LANGUAGES = {
-    'bash', 'c', 'css', 'diff', 'django', 'html', 'irc', 'js', 'php', 'pycon',
-    'pytb', 'python', 'python3', 'rst', 'sql', 'text'
-}
-
-local function DPASTE_DE_MATCHER(response, header)
-    for k, v in pairs(header) do print(k, v) end
-    print(response)
-    local url = header.location
-    if url then
-        return url
-    end
-    return error_retrieving_url
-end
-
-local function DPASTE_DE_BODY()
-    return create_form_body({
-        content = LP.textdata,
-        lexer = get_language(),
---        expire_options = get_expires(),
-        expire_options = '3600',
-        submit = 'Paste it',
-        title = '',
-    })
-end
-
-local DPASTE_DE_EXPIRES = {['1 hour'] = '3600', ['1 week'] = '604800', ['1 month'] = '2592000'}
-
-
-local DPASTE_COM_LANGUAGES = {
-    "Python", "PythonConsole", "Sql", "DjangoTemplate", "JScript", "Css", "Xml",
-    "Diff", "Ruby", "Rhtml", "Haskell", "Apache", "Bash", ["Plain"] = "";
-}
-
-local function DPASTE_COM_MATCHER(response, header)
-    local url = header.location
-    if url then
-        return url
-    end
-    return error_retrieving_url
-end
-
-local function DPASTE_COM_BODY()
-    return create_form_body({
-        client = 'Luapaste',
-        content = LP.textdata,
-        title = LP.description,
-        poster = LP.nick,
-        language = get_language(),
-    })
-end
-
-
-local SPRUNGE_LANGUAGES = {['plain'] = true, ['plain text'] = true, 'js+mako',
-    'javascript+mako', 'brainfuck', 'bf', 'html+cheetah', 'html+spitfire', 'bash',
-    'sh', 'ksh', 'css+myghty', 'cfm', 'smarty', 'protobuf', 'apacheconf', 'aconf',
-    'apache', 'java', 'js+genshitext', 'js+genshi', 'javascript+genshitext',
-    'javascript+genshi', 'erlang', 'coffee-script', 'coffeescript', 'antlr-as',
-    'antlr-actionscript', 'd-objdump', 'css+erb', 'css+ruby', 'mysql', 'cpp',
-    'c++', 'xml+smarty', 'ahk', 'felix', 'flx', 'cmake', 'mako', 'python', 'py',
-    'js+myghty', 'javascript+myghty', 'xml+mako', 'scaml', 'SCAML', 'maql', 'boo',
-    'as', 'actionscript', 'vb.net', 'vbnet', 'squidconf', 'squid.conf', 'squid',
-    'd', 'logtalk', 'scss', 'bbcode', 'haml', 'HAML', 'mupad', 'xml+erb',
-    'xml+ruby', 'control', 'jade', 'JADE', 'rhtml', 'html+erb', 'html+ruby',
-    'xml+velocity', 'js+cheetah', 'javascript+cheetah', 'js+spitfire',
-    'javascript+spitfire', 'pytb', 'cfs', 'ada', 'ada95ada2005', 'objdump',
-    'css+mako', 'Cucumber', 'cucumber', 'Gherkin', 'gherkin', 'ragel-java', 'io',
-    'vala', 'vapi', 'haskell', 'hs', 'lua', 'sass', 'SASS', 'antlr-objc', 'xml',
-    'groff', 'nroff', 'man', 'glsl', 'genshitext', 'objective-j', 'objectivej',
-    'obj-j', 'objj', 'gas', 'pycon', 'mxml', 'xml+cheetah', 'xml+spitfire', 'go',
-    'ragel-c', 'aspx-cs', 'properties', 'ragel-ruby', 'ragel-rb', 'blitzmax',
-    'bmax', 'html+genshi', 'html+kid', 'perl', 'pl', 'ini', 'cfg', 'c-objdump',
-    'tcsh', 'csh', 'rconsole', 'rout', 'css+smarty', 'text', 'antlr-csharp',
-    'antlr-c#', 'dpatch', 'llvm', 'nginx', 'applescript', 'html+smarty', 'lhs',
-    'literate-haskell', 'php', 'php3', 'php4', 'php5', 'minid', 'ooc', 'sql',
-    'nasm', 'sourceslist', 'sources.list', 'delphi', 'pas', 'pascal',
-    'objectpascal', 'aspx-vb', 'html+evoque', 'numpy', 'modula2', 'm2',
-    'html+django', 'html+jinja', 'css+php', 'vim', 'css+genshitext', 'css+genshi',
-    'ragel', 'ssp', 'xml+evoque', 'hx', 'haXe', 'redcode', 'django', 'jinja',
-    'scala', 'lighty', 'lighttpd', 'html+velocity', 'ragel-d', 'rbcon', 'irb',
-    'css', 'js+smarty', 'javascript+smarty', 'asy', 'asymptote', 'xml+php',
-    'fortran', 'gnuplot', 'rebol', 'erb', 'befunge', 'dylan', 'trac-wiki', 'moin',
-    'matlab', 'octave', 'c', 'html', 'genshi', 'kid', 'xml+genshi', 'xml+kid',
-    'rst', 'rest', 'restructuredtext', 'velocity', 'irc', 'prolog', 'css+django',
-    'css+jinja', 'smalltalk', 'squeak', 'yaml', 'html+myghty', 'make', 'makefile',
-    'mf', 'bsdmake', 'xslt', 'splus', 's', 'r', 'sqlite3', 'ocaml', 'pot', 'po',
-    'rb', 'ruby', 'duby', 'py3tb', 'pov', 'ragel-cpp', 'evoque', 'jsp', 'abap',
-    'html+mako', 'diff', 'udiff', 'matlabsession', 'mason', 'html+php',
-    'postscript', 'v', 'antlr-java', 'tcl', 'js+erb', 'javascript+erb', 'js+ruby',
-    'javascript+ruby', 'basemake', 'antlr-python', 'cpp-objdump', 'c++-objdumb',
-    'cxx-objdump', 'ioke', 'ik', 'python3', 'py3', 'bat', 'antlr', 'js+django',
-    'javascript+django', 'js+jinja', 'javascript+jinja', 'cython', 'pyx', 'scheme',
-    'scm', 'erl', 'clojure', 'clj', 'modelica', 'antlr-perl', 'myghty', 'duel',
-    'Duel Engine', 'Duel View', 'JBST', 'jbst', 'JsonML+BST', 'moocode',
-    'newspeak', 'console', 'raw', 'csharp', 'c#', 'tex', 'latex', 'cheetah',
-    'spitfire', 'gooddata-cl', 'objective-c', 'objectivec', 'obj-c', 'objc', 'js',
-    'javascript', 'common-lisp', 'cl', 'ragel-em', 'as3', 'actionscript3',
-    'antlr-cpp', 'hybris', 'hy', 'js+php', 'javascript+php', 'factor', 'xquery',
-    'xqy', 'ragel-objc', 'xml+django', 'xml+jinja', 'antlr-ruby', 'antlr-rb',
-    'xml+myghty',
-}
-
-local function SPRUNGE_MATCHER(response, header)
-    local lang = get_language()
-    local url = response:match('(http://sprunge.us/.+[^\n])')
-    if url then
-        if lang ~= true then
-            return string.format('%s?%s', url, lang)
-        end
-        return url
-    end
-    return error_retrieving_url
-end
-
-local function SPRUNGE_BODY()
-    return create_form_body({
-        sprunge = LP.textdata
-    })
-end
-
-
-local default_post_method = function(filename)
+LP.default_post_method = function(filename)
     local service = LP.services[LP.service]
     local body = service.body()
     local head = {
@@ -298,11 +172,6 @@ local default_post_method = function(filename)
 
     return service.matcher(response, h)
 end
-
-add_service('codepad', 'http://codepad.org/', CODEPAD_LANGUAGES, CODEPAD_BODY, default_post_method, CODEPAD_MATCHER)
-add_service('dpaste.de', 'http://dpaste.de/', DPASTE_DE_LANGUAGES, DPASTE_DE_BODY, default_post_method, DPASTE_DE_MATCHER, DPASTE_DE_EXPIRES)
-add_service('dpaste.com', 'http://dpaste.com/api/v1/', DPASTE_COM_LANGUAGES, DPASTE_COM_BODY, default_post_method, DPASTE_COM_MATCHER)
-add_service('sprunge', 'http://sprunge.us', SPRUNGE_LANGUAGES, SPRUNGE_BODY, default_post_method, SPRUNGE_MATCHER)
 
 local function submit()
     local returned_urls = {}
@@ -477,7 +346,7 @@ local function list_services()
     LP.cont = false
 end
 
-add_option(LP, false, "S", list_services, "list-services")
+add_option(false, "S", list_services, "list-services")
 
 local function list_languages(params)
     LP.cont = false
@@ -495,13 +364,6 @@ local function list_languages(params)
 end
 
 add_option(true, "L", list_languages, "list-languages")
-
---local function stdin()
---    LP.file = 'data from stdin'
---    LP.stdin = true
---end
-
---add_option(false, "stdin", stdin)
 
 local function set_expiry(params)
     if params[1] then
@@ -666,7 +528,7 @@ local function check_expiry()
     end
 end
 
-
+load_services(LP.services_dir)
 
 get_options()
 set_options()
