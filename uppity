@@ -438,7 +438,7 @@ Options:
     -e, --expiration EXPIRATION     set when to expire (defaults to 1 day)
     -C, --command COMMAND           run COMMAND and paste the output
     -p, --private                   set private flag if available
-    -r, --run                       set run flag (codepad)
+    -r, --run                       set run flag (codepad, ideone)
     -c, --concat                    concat multiple files into a single upload
                                     default is a separate paste for each file
     -x, --xcut                      read input from clipboard (requires xclip)
