@@ -1,5 +1,3 @@
-#!/usr/bin/env lua
-
 local UBUNTU_LANGUAGES = {
     "text", "apacheconf", "as", "bash", "bat", "bbcode", "befunge", "boo",
     "c", "c-objdump", "common-lisp", "control", "cpp", "cpp-objdump", "csharp",
