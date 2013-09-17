@@ -1,5 +1,3 @@
-#!/usr/bin/env lua
-
 local CODEPAD_LANGUAGES = {
     "C", "C++", "D", "Haskell", "Lua", "OCaml", "PHP", "Perl", ["Plain"] = "Plain Text",
     "Python", "Ruby", "Scheme", "Tcl",
